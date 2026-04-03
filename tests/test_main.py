@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from main import (
+    BUTTON_TEXT_REGEX,
+    KNOWN_BUTTON_LABELS,
     AppConfig,
     BotState,
     DAILY_TIME,
@@ -75,6 +77,13 @@ class MainTests(unittest.TestCase):
                 self.assertEqual(cfg.chat_id, 42)
                 self.assertEqual(cfg.admin_ids, {1, 2})
                 self.assertTrue(str(cfg.state_path).endswith("s.json"))
+
+    def test_button_regex_matches_only_known_labels(self):
+        for label in KNOWN_BUTTON_LABELS:
+            self.assertIsNotNone(BUTTON_TEXT_REGEX.match(label))
+
+        self.assertIsNone(BUTTON_TEXT_REGEX.match("Привет"))
+        self.assertIsNone(BUTTON_TEXT_REGEX.match("/status"))
 
     def test_setday_and_restart_keep_state_consistent(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -45,6 +46,8 @@ BTN_START = "Запустить"
 BTN_STOP = "Остановить"
 BTN_RESTART = "Перезапустить"
 BTN_HELP = "Помощь"
+KNOWN_BUTTON_LABELS = (BTN_STATUS, BTN_TODAY, BTN_START, BTN_STOP, BTN_RESTART, BTN_HELP)
+BUTTON_TEXT_REGEX = re.compile(rf"^({'|'.join(re.escape(label) for label in KNOWN_BUTTON_LABELS)})$")
 
 
 STANDING_PHRASES = [
@@ -533,10 +536,13 @@ class PlankChallengeBot:
         )
 
     async def handle_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        text = (update.effective_message.text or "").strip()
+        if text not in KNOWN_BUTTON_LABELS:
+            return
+
         if await self._deny_non_admin(update):
             return
 
-        text = (update.effective_message.text or "").strip()
         if text == BTN_STATUS:
             await self.cmd_status(update, context)
         elif text == BTN_TODAY:
@@ -559,7 +565,9 @@ class PlankChallengeBot:
         application.add_handler(CommandHandler(START_CHALLENGE_COMMAND, self.cmd_start_challenge))
         application.add_handler(CommandHandler(STOP_CHALLENGE_COMMAND, self.cmd_stop_challenge))
         application.add_handler(CommandHandler(RESTART_CHALLENGE_COMMAND, self.cmd_restart_challenge))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_buttons))
+        application.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(BUTTON_TEXT_REGEX), self.handle_buttons)
+        )
 
     def start_scheduler(self) -> None:
         self.scheduler.add_job(
