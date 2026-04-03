@@ -86,6 +86,29 @@ class MainTests(unittest.TestCase):
         self.assertIsNone(BUTTON_TEXT_REGEX.match("Привет"))
         self.assertIsNone(BUTTON_TEXT_REGEX.match("/status"))
 
+    def test_register_handlers_routes_button_text_before_manual_date_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AppConfig(bot_token="t", chat_id=1, state_path=Path(tmp) / "state.json", admin_ids={1})
+            bot = PlankChallengeBot(config)
+
+            class DummyApplication:
+                def __init__(self):
+                    self.handlers = []
+
+                def add_handler(self, handler):
+                    self.handlers.append(handler)
+
+            application = DummyApplication()
+            bot.register_handlers(application)
+
+            callback_order = [handler.callback.__name__ for handler in application.handlers if hasattr(handler, "callback")]
+            self.assertIn("handle_buttons", callback_order)
+            self.assertIn("handle_manual_start_date_input", callback_order)
+            self.assertLess(
+                callback_order.index("handle_buttons"),
+                callback_order.index("handle_manual_start_date_input"),
+            )
+
     def test_setday_and_restart_keep_state_consistent(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = AppConfig(bot_token="t", chat_id=1, state_path=Path(tmp) / "state.json", admin_ids={1})

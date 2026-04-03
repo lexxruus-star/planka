@@ -726,10 +726,10 @@ class PlankChallengeBot:
         application.add_handler(CommandHandler(RESTART_CHALLENGE_COMMAND, self.cmd_restart_challenge))
         application.add_handler(CommandHandler("configure_start", self.cmd_configure_start))
         application.add_handler(CallbackQueryHandler(self.handle_start_date_callback, pattern=r"^start:"))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_manual_start_date_input))
         application.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(BUTTON_TEXT_REGEX), self.handle_buttons)
         )
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_manual_start_date_input))
 
     def start_scheduler(self) -> None:
         self.scheduler.add_job(
