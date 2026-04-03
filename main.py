@@ -10,10 +10,11 @@ from typing import Dict, Optional, Set
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from telegram import ReplyKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -39,15 +40,24 @@ SETDAY_COMMAND = "setday"
 START_CHALLENGE_COMMAND = "start_challenge"
 STOP_CHALLENGE_COMMAND = "stop_challenge"
 RESTART_CHALLENGE_COMMAND = "restart_challenge"
+CHATID_COMMAND = "chatid"
 
 BTN_STATUS = "Статус"
 BTN_TODAY = "Сегодня"
 BTN_START = "Запустить"
 BTN_STOP = "Остановить"
 BTN_RESTART = "Перезапустить"
+BTN_CONFIGURE_START = "Настроить старт"
 BTN_HELP = "Помощь"
-KNOWN_BUTTON_LABELS = (BTN_STATUS, BTN_TODAY, BTN_START, BTN_STOP, BTN_RESTART, BTN_HELP)
+KNOWN_BUTTON_LABELS = (BTN_STATUS, BTN_TODAY, BTN_START, BTN_STOP, BTN_RESTART, BTN_CONFIGURE_START, BTN_HELP)
 BUTTON_TEXT_REGEX = re.compile(rf"^({'|'.join(re.escape(label) for label in KNOWN_BUTTON_LABELS)})$")
+
+START_ACTION_MONDAY = "start:monday"
+START_ACTION_TOMORROW = "start:tomorrow"
+START_ACTION_TODAY = "start:today"
+START_ACTION_MANUAL = "start:manual"
+START_ACTION_CANCEL = "start:cancel"
+START_DATE_INPUT_KEY = "awaiting_start_date_input"
 
 
 STANDING_PHRASES = [
@@ -219,9 +229,22 @@ class PlankChallengeBot:
             [
                 [BTN_STATUS, BTN_TODAY],
                 [BTN_START, BTN_STOP, BTN_RESTART],
+                [BTN_CONFIGURE_START],
                 [BTN_HELP],
             ],
             resize_keyboard=True,
+        )
+
+    @staticmethod
+    def _build_start_config_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("Ближайший понедельник", callback_data=START_ACTION_MONDAY)],
+                [InlineKeyboardButton("Завтра", callback_data=START_ACTION_TOMORROW)],
+                [InlineKeyboardButton("Сегодня", callback_data=START_ACTION_TODAY)],
+                [InlineKeyboardButton("Ввести дату", callback_data=START_ACTION_MANUAL)],
+                [InlineKeyboardButton("Отмена", callback_data=START_ACTION_CANCEL)],
+            ]
         )
 
     def _load_or_create_state(self) -> BotState:
@@ -360,9 +383,11 @@ class PlankChallengeBot:
         now = self._current_msk_datetime()
         day_number = self._day_number_for_date(now.date())
         state_text = "запущен" if self.state.challenge_active else "остановлен"
+        has_started = day_number >= 1
+        progress_text = f"начался, текущий день: {day_number}" if has_started else "ещё не начался (ожидает старта)"
         return (
             f"Статус: {state_text}.\n"
-            f"Текущий день: {day_number}.\n"
+            f"Челлендж: {progress_text}.\n"
             f"Дата старта: {self.state.challenge_start_date.isoformat()}.\n"
             f"Дата финала: {self.final_date.isoformat()}.\n"
             f"Последняя дневная отправка: {self.state.last_daily_sent_for or '-'}\n"
@@ -381,12 +406,42 @@ class PlankChallengeBot:
         user = update.effective_user
         return bool(user and user.id in self.config.admin_ids)
 
+    @staticmethod
+    def _is_private_chat(update: Update) -> bool:
+        chat = update.effective_chat
+        return bool(chat and chat.type == "private")
+
+    async def _deny_non_admin_or_non_private(self, update: Update) -> bool:
+        if not self._is_private_chat(update):
+            return True
+        if self._is_admin(update):
+            return False
+        if update.effective_message:
+            await update.effective_message.reply_text("У вас нет доступа к управлению этим ботом.")
+        return True
+
     async def _deny_non_admin(self, update: Update) -> bool:
         if self._is_admin(update):
             return False
         if update.effective_message:
             await update.effective_message.reply_text("У вас нет доступа к управлению этим ботом.")
         return True
+
+    @staticmethod
+    def _nearest_monday_from(current_date: date) -> date:
+        days_ahead = (0 - current_date.weekday()) % 7
+        return current_date + timedelta(days=days_ahead)
+
+    def _set_start_date(self, start_date: date) -> None:
+        self.state.challenge_start_date = start_date
+        self.state.last_daily_sent_for = None
+        self.state.final_sent_for = None
+        self._persist_state()
+
+    async def _apply_start_date_change(self, start_date: date) -> None:
+        self._set_start_date(start_date)
+        await self.send_daily_message_if_needed(allow_late=True)
+        await self.send_final_message_if_needed(allow_late=True)
 
     async def send_daily_message_if_needed(self, *, allow_late: bool = False) -> None:
         async with self._send_lock:
@@ -449,7 +504,7 @@ class PlankChallengeBot:
             logger.info("Sent final message")
 
     async def cmd_start(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-        if await self._deny_non_admin(update):
+        if await self._deny_non_admin_or_non_private(update):
             return
 
         await update.effective_message.reply_text(
@@ -458,7 +513,7 @@ class PlankChallengeBot:
         )
 
     async def cmd_help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-        if await self._deny_non_admin(update):
+        if await self._deny_non_admin_or_non_private(update):
             return
 
         help_text = (
@@ -468,6 +523,8 @@ class PlankChallengeBot:
             "/status — состояние бота и челленджа\n"
             "/today — план на текущий день\n"
             "/setday N — установить текущий день (1..30)\n"
+            "/configure_start — настроить дату дня 1\n"
+            "/chatid — показать chat id (и thread id, если есть)\n"
             "/start_challenge — запустить цикл\n"
             "/stop_challenge — остановить цикл\n"
             "/restart_challenge — перезапустить челлендж с дня 1 сегодня"
@@ -475,12 +532,12 @@ class PlankChallengeBot:
         await update.effective_message.reply_text(help_text, reply_markup=self._build_keyboard())
 
     async def cmd_status(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-        if await self._deny_non_admin(update):
+        if await self._deny_non_admin_or_non_private(update):
             return
         await update.effective_message.reply_text(self._build_status_message(), reply_markup=self._build_keyboard())
 
     async def cmd_today(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-        if await self._deny_non_admin(update):
+        if await self._deny_non_admin_or_non_private(update):
             return
 
         today = self._current_msk_datetime().date()
@@ -492,7 +549,7 @@ class PlankChallengeBot:
         await update.effective_message.reply_text(text, reply_markup=self._build_keyboard())
 
     async def cmd_setday(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if await self._deny_non_admin(update):
+        if await self._deny_non_admin_or_non_private(update):
             return
 
         if not context.args:
@@ -511,7 +568,7 @@ class PlankChallengeBot:
         )
 
     async def cmd_start_challenge(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-        if await self._deny_non_admin(update):
+        if await self._deny_non_admin_or_non_private(update):
             return
 
         self.start_challenge()
@@ -520,14 +577,14 @@ class PlankChallengeBot:
         await self.send_final_message_if_needed(allow_late=True)
 
     async def cmd_stop_challenge(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-        if await self._deny_non_admin(update):
+        if await self._deny_non_admin_or_non_private(update):
             return
 
         self.stop_challenge()
         await update.effective_message.reply_text("Челлендж остановлен.")
 
     async def cmd_restart_challenge(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-        if await self._deny_non_admin(update):
+        if await self._deny_non_admin_or_non_private(update):
             return
 
         self.restart_challenge()
@@ -535,12 +592,111 @@ class PlankChallengeBot:
             f"Челлендж перезапущен. День 1 установлен на {self.state.challenge_start_date.isoformat()}."
         )
 
+    async def cmd_configure_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if await self._deny_non_admin_or_non_private(update):
+            return
+
+        context.user_data.pop(START_DATE_INPUT_KEY, None)
+        await update.effective_message.reply_text(
+            "Выберите дату для дня 1:",
+            reply_markup=self._build_start_config_keyboard(),
+        )
+
+    async def handle_start_date_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if not query:
+            return
+
+        if await self._deny_non_admin_or_non_private(update):
+            await query.answer()
+            return
+
+        now_date = self._current_msk_datetime().date()
+        action = query.data
+        context.user_data.pop(START_DATE_INPUT_KEY, None)
+
+        if action == START_ACTION_CANCEL:
+            await query.answer("Отменено")
+            await query.edit_message_text("Настройка старта отменена.")
+            return
+
+        if action == START_ACTION_MANUAL:
+            context.user_data[START_DATE_INPUT_KEY] = True
+            await query.answer()
+            await query.edit_message_text("Введите дату дня 1 в формате YYYY-MM-DD.")
+            return
+
+        if action == START_ACTION_MONDAY:
+            start_date = self._nearest_monday_from(now_date)
+        elif action == START_ACTION_TOMORROW:
+            start_date = now_date + timedelta(days=1)
+        elif action == START_ACTION_TODAY:
+            start_date = now_date
+        else:
+            await query.answer()
+            return
+
+        await self._apply_start_date_change(start_date)
+        await query.answer("Дата обновлена")
+        await query.edit_message_text(
+            f"День 1 теперь: {self.state.challenge_start_date.isoformat()}.\n"
+            f"Финальный день: {self.final_date.isoformat()}."
+        )
+
+    async def handle_manual_start_date_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if await self._deny_non_admin_or_non_private(update):
+            return
+
+        if not context.user_data.get(START_DATE_INPUT_KEY):
+            return
+
+        raw_value = (update.effective_message.text or "").strip()
+        if raw_value.lower() == "отмена":
+            context.user_data.pop(START_DATE_INPUT_KEY, None)
+            await update.effective_message.reply_text("Настройка старта отменена.", reply_markup=self._build_keyboard())
+            return
+
+        try:
+            start_date = _parse_iso_date(raw_value, "manual start date")
+        except RuntimeError:
+            await update.effective_message.reply_text(
+                "Неверный формат даты. Используйте YYYY-MM-DD или отправьте «Отмена»."
+            )
+            return
+
+        context.user_data.pop(START_DATE_INPUT_KEY, None)
+        await self._apply_start_date_change(start_date)
+        await update.effective_message.reply_text(
+            f"День 1 теперь: {self.state.challenge_start_date.isoformat()}.\n"
+            f"Финальный день: {self.final_date.isoformat()}.",
+            reply_markup=self._build_keyboard(),
+        )
+
+    async def cmd_chatid(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        if await self._deny_non_admin(update):
+            return
+
+        chat = update.effective_chat
+        message = update.effective_message
+        user = update.effective_user
+
+        if not chat or not message:
+            return
+
+        lines = [f"Chat ID: {chat.id}"]
+        if chat.type == "private" and user:
+            lines.append(f"User ID: {user.id}")
+        if message.message_thread_id is not None:
+            lines.append(f"Message Thread ID: {message.message_thread_id}")
+
+        await message.reply_text("\n".join(lines))
+
     async def handle_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text = (update.effective_message.text or "").strip()
         if text not in KNOWN_BUTTON_LABELS:
             return
 
-        if await self._deny_non_admin(update):
+        if await self._deny_non_admin_or_non_private(update):
             return
 
         if text == BTN_STATUS:
@@ -553,6 +709,8 @@ class PlankChallengeBot:
             await self.cmd_stop_challenge(update, context)
         elif text == BTN_RESTART:
             await self.cmd_restart_challenge(update, context)
+        elif text == BTN_CONFIGURE_START:
+            await self.cmd_configure_start(update, context)
         elif text == BTN_HELP:
             await self.cmd_help(update, context)
 
@@ -562,9 +720,13 @@ class PlankChallengeBot:
         application.add_handler(CommandHandler(STATUS_COMMAND, self.cmd_status))
         application.add_handler(CommandHandler(TODAY_COMMAND, self.cmd_today))
         application.add_handler(CommandHandler(SETDAY_COMMAND, self.cmd_setday))
+        application.add_handler(CommandHandler(CHATID_COMMAND, self.cmd_chatid))
         application.add_handler(CommandHandler(START_CHALLENGE_COMMAND, self.cmd_start_challenge))
         application.add_handler(CommandHandler(STOP_CHALLENGE_COMMAND, self.cmd_stop_challenge))
         application.add_handler(CommandHandler(RESTART_CHALLENGE_COMMAND, self.cmd_restart_challenge))
+        application.add_handler(CommandHandler("configure_start", self.cmd_configure_start))
+        application.add_handler(CallbackQueryHandler(self.handle_start_date_callback, pattern=r"^start:"))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_manual_start_date_input))
         application.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(BUTTON_TEXT_REGEX), self.handle_buttons)
         )
