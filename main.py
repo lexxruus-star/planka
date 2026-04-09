@@ -27,6 +27,8 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+for noisy_logger_name in ("httpx", "httpcore", "telegram", "telegram.ext"):
+    logging.getLogger(noisy_logger_name).setLevel(logging.WARNING)
 
 MSK = timezone(timedelta(hours=3), name="MSK")
 DAILY_TIME = time(8, 0)
@@ -65,39 +67,36 @@ STANDING_PHRASES = [
     "Доброе утро. Пора немного пострадать.",
     "Сегодня без отмазок, поехали.",
     "Встаём, собираемся, держим.",
-    "Ну всё, пришло время планки.",
-    "Погнали, пока энтузиазм не передумал.",
-    "Опять она. Планка.",
-    "Сегодня коротко: сделали и свободны.",
-    "Пора немного напрячь красивое.",
-    "Поехали, пока не нашли причину отложить.",
-    "Сегодня просто берём и делаем.",
-    "Так, собрались. Сегодня день планки.",
-    "Погнали держать лицо и корпус.",
-    "Планка сама себя не постоит.",
-    "Сегодня работаем без героизма, но честно.",
-    "Ну что, стоим как взрослые люди.",
-    "Секунд немного, нытья тоже много не надо.",
-    "Сегодня просто не филоним.",
-    "Пора встать в планку, а не в позу.",
-    "Сегодня стоим красиво. Ну или хотя бы стоим.",
 ]
 
-REST_PHRASES = [
-    "Сегодня официальный день ничегонеделания.",
-    "Всё, сегодня можно не дрожать.",
-    "Сегодня лежим с чистой совестью.",
-    "Сегодня день без локтей и страданий.",
-]
-
-SPECIAL_PHRASES = [
-    "Сегодня ещё и бонус — спецзадание.",
-    "Мало не покажется: сегодня спецзадание.",
-    "А вот и сюрприз — сегодня спецзадание.",
-    "Сегодня программа с добавкой: есть спецзадание.",
-    "Кто хотел поинтереснее — сегодня спецзадание.",
-    "Сегодня комплект полный: планка и спецзадание.",
-]
+DAY_MESSAGES: Dict[int, str] = {
+    5: "Доброе утро. Сегодня продолжаем.\nДень 5.\nСегодня стоим 40 сек.\nСегодня, кроме основной нормы, есть спецзадание.",
+    6: "Сегодня отдых. Это тоже часть плана.\nА вы знали, что планка — это упражнение, где мышцы работают почти без движения?\nСнаружи всё выглядит спокойно, а внутри корпус уже активно включается в работу.",
+    7: "Новый день — новая норма.\nДень 7.\nСегодня стоим 45 сек.",
+    8: "Сегодня идём дальше по плану.\nДень 8.\nСегодня стоим 45 сек.",
+    9: "Спокойно, уверенно, поехали.\nДень 9.\nСегодня стоим 1 мин.",
+    10: "Доброе утро. Сегодня продолжаем.\nДень 10.\nСегодня стоим 1 мин.\nСегодня день со спецзаданием.",
+    11: "Сегодня делаем свою норму.\nДень 11.\nСегодня стоим 1 мин.",
+    12: "Новый день — новая норма.\nДень 12.\nСегодня стоим 1 мин 30 сек.",
+    13: "Сегодня отдых — можно спокойно выдохнуть.\nА вы знали, что в планке работает не только пресс, а сразу много мышц корпуса?\nПоэтому она считается упражнением не на одну зону, а сразу на целую команду мышц.",
+    14: "Сегодня идём дальше по плану.\nДень 14.\nСегодня стоим 1 мин 40 сек.",
+    15: "Спокойно, уверенно, поехали.\nДень 15.\nСегодня стоим 1 мин 50 сек.\nСегодня к основной норме добавляется спецзадание.",
+    16: "Доброе утро. Сегодня продолжаем.\nДень 16.\nСегодня стоим 2 мин.",
+    17: "Сегодня делаем свою норму.\nДень 17.\nСегодня стоим 2 мин.",
+    18: "Новый день — новая норма.\nДень 18.\nСегодня стоим 2 мин 30 сек.",
+    19: "Сегодня отдых. Восстанавливаемся и набираемся сил.\nА вы знали, что у планки есть целое семейство вариантов?\nНа локтях, на прямых руках, боковая — упражнение одно, а способов выполнять его довольно много.",
+    20: "Сегодня идём дальше по плану.\nДень 20.\nСегодня стоим 2 мин 30 сек.\nСегодня, кроме основной нормы, есть спецзадание.",
+    21: "Спокойно, уверенно, поехали.\nДень 21.\nСегодня стоим 2 мин 30 сек.",
+    22: "Доброе утро. Сегодня продолжаем.\nДень 22.\nСегодня стоим 3 мин.",
+    23: "Сегодня делаем свою норму.\nДень 23.\nСегодня стоим 3 мин.",
+    24: "Новый день — новая норма.\nДень 24.\nСегодня стоим 3 мин 30 сек.",
+    25: "Сегодня идём дальше по плану.\nДень 25.\nСегодня стоим 3 мин 30 сек.\nСегодня день со спецзаданием.",
+    26: "Сегодня отдых. Завтра продолжим.\nА вы знали, что главный смысл планки — не просто простоять нужное время, а научить корпус держаться стабильно?\nПоэтому здесь важны не только секунды, но и ощущение ровной, устойчивой позиции.",
+    27: "Спокойно, уверенно, поехали.\nДень 27.\nСегодня стоим 4 мин.",
+    28: "Доброе утро. Сегодня продолжаем.\nДень 28.\nСегодня стоим 4 мин.",
+    29: "Сегодня делаем свою норму.\nДень 29.\nСегодня стоим 4 мин 30 сек.",
+    30: "Новый день — новая норма.\nДень 30.\nСегодня стоим 5 мин.\nСегодня к основной норме добавляется спецзадание.",
+}
 
 DAY_PLAN: Dict[int, Dict[str, str]] = {
     1: {"type": "stand", "time": "20 сек"},
@@ -132,9 +131,7 @@ DAY_PLAN: Dict[int, Dict[str, str]] = {
     30: {"type": "special", "time": "5 мин"},
 }
 
-STANDING_DAYS = [1, 2, 3, 4, 7, 8, 9, 11, 12, 14, 16, 17, 18, 21, 22, 23, 24, 27, 28, 29]
-REST_DAYS = [6, 13, 19, 26]
-SPECIAL_DAYS = [5, 10, 15, 20, 25, 30]
+STANDING_DAYS = [1, 2, 3, 4]
 
 
 @dataclass
@@ -209,8 +206,6 @@ class PlankChallengeBot:
         self._validate_configuration()
 
         self._standing_phrase_by_day = dict(zip(STANDING_DAYS, STANDING_PHRASES))
-        self._rest_phrase_by_day = dict(zip(REST_DAYS, REST_PHRASES))
-        self._special_phrase_by_day = dict(zip(SPECIAL_DAYS, SPECIAL_PHRASES))
 
         self.state = self._load_or_create_state()
 
@@ -305,20 +300,12 @@ class PlankChallengeBot:
 
         if len(STANDING_DAYS) != len(STANDING_PHRASES):
             raise RuntimeError("Standing phrases count does not match standing days count")
-        if len(REST_DAYS) != len(REST_PHRASES):
-            raise RuntimeError("Rest phrases count does not match rest days count")
-        if len(SPECIAL_DAYS) != len(SPECIAL_PHRASES):
-            raise RuntimeError("Special phrases count does not match special days count")
+        if sorted(DAY_MESSAGES.keys()) != list(range(5, 31)):
+            raise RuntimeError("DAY_MESSAGES must contain all days from 5 to 30")
 
         for day in STANDING_DAYS:
             if DAY_PLAN[day]["type"] != "stand":
                 raise RuntimeError(f"Day {day} must be stand day")
-        for day in REST_DAYS:
-            if DAY_PLAN[day]["type"] != "rest":
-                raise RuntimeError(f"Day {day} must be rest day")
-        for day in SPECIAL_DAYS:
-            if DAY_PLAN[day]["type"] != "special":
-                raise RuntimeError(f"Day {day} must be special day")
 
     @staticmethod
     def _current_msk_datetime() -> datetime:
@@ -353,25 +340,15 @@ class PlankChallengeBot:
         self._persist_state()
 
     def _build_daily_message(self, day_number: int) -> str:
+        if day_number in DAY_MESSAGES:
+            return DAY_MESSAGES[day_number]
+
         day_info = DAY_PLAN[day_number]
         day_type = day_info["type"]
 
         if day_type == "stand":
             phrase = self._standing_phrase_by_day[day_number]
             return f"{phrase}\nДень {day_number}.\nСегодня стоим {day_info['time']}."
-
-        if day_type == "rest":
-            phrase = self._rest_phrase_by_day[day_number]
-            return f"{phrase}\nДень {day_number}.\nСегодня отдых."
-
-        if day_type == "special":
-            phrase = self._special_phrase_by_day[day_number]
-            return (
-                f"{phrase}\n"
-                f"День {day_number}.\n"
-                f"Сегодня стоим {day_info['time']}.\n"
-                f"Сегодня есть спецзадание."
-            )
 
         raise ValueError(f"Unknown day type: {day_type}")
 

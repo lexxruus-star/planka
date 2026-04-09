@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, patch
 
 from main import (
     BUTTON_TEXT_REGEX,
+    DAY_MESSAGES,
+    DAY_PLAN,
     KNOWN_BUTTON_LABELS,
     AppConfig,
     BotState,
@@ -152,6 +154,67 @@ class MainTests(unittest.TestCase):
 
             self.assertIn("ещё не начался", status)
 
+    def test_day_plan_matches_agreed_schedule(self):
+        expected = {
+            1: ("stand", "20 сек"),
+            2: ("stand", "20 сек"),
+            3: ("stand", "30 сек"),
+            4: ("stand", "30 сек"),
+            5: ("special", "40 сек"),
+            6: ("rest", None),
+            7: ("stand", "45 сек"),
+            8: ("stand", "45 сек"),
+            9: ("stand", "1 мин"),
+            10: ("special", "1 мин"),
+            11: ("stand", "1 мин"),
+            12: ("stand", "1 мин 30 сек"),
+            13: ("rest", None),
+            14: ("stand", "1 мин 40 сек"),
+            15: ("special", "1 мин 50 сек"),
+            16: ("stand", "2 мин"),
+            17: ("stand", "2 мин"),
+            18: ("stand", "2 мин 30 сек"),
+            19: ("rest", None),
+            20: ("special", "2 мин 30 сек"),
+            21: ("stand", "2 мин 30 сек"),
+            22: ("stand", "3 мин"),
+            23: ("stand", "3 мин"),
+            24: ("stand", "3 мин 30 сек"),
+            25: ("special", "3 мин 30 сек"),
+            26: ("rest", None),
+            27: ("stand", "4 мин"),
+            28: ("stand", "4 мин"),
+            29: ("stand", "4 мин 30 сек"),
+            30: ("special", "5 мин"),
+        }
+        for day, (day_type, duration) in expected.items():
+            self.assertEqual(DAY_PLAN[day]["type"], day_type)
+            if duration is None:
+                self.assertNotIn("time", DAY_PLAN[day])
+            else:
+                self.assertEqual(DAY_PLAN[day]["time"], duration)
+
+    def test_soft_messages_are_set_for_days_5_to_30(self):
+        self.assertEqual(sorted(DAY_MESSAGES.keys()), list(range(5, 31)))
+        self.assertEqual(
+            DAY_MESSAGES[6],
+            "Сегодня отдых. Это тоже часть плана.\n"
+            "А вы знали, что планка — это упражнение, где мышцы работают почти без движения?\n"
+            "Снаружи всё выглядит спокойно, а внутри корпус уже активно включается в работу.",
+        )
+        self.assertIn("Сегодня день со спецзаданием.", DAY_MESSAGES[10])
+        self.assertIn("Сегодня к основной норме добавляется спецзадание.", DAY_MESSAGES[30])
+
+    def test_daily_message_builder_uses_new_texts_and_keeps_days_1_to_4(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AppConfig(bot_token="t", chat_id=1, state_path=Path(tmp) / "state.json", admin_ids={1})
+            bot = PlankChallengeBot(config)
+            self.assertEqual(
+                bot._build_daily_message(5),
+                "Доброе утро. Сегодня продолжаем.\nДень 5.\nСегодня стоим 40 сек.\nСегодня, кроме основной нормы, есть спецзадание.",
+            )
+            self.assertIn("День 1.", bot._build_daily_message(1))
+
 
 class MainAsyncTests(unittest.IsolatedAsyncioTestCase):
     def _create_bot(self):
@@ -269,6 +332,135 @@ class MainAsyncTests(unittest.IsolatedAsyncioTestCase):
         sent_text = reply_text.await_args.args[0]
         self.assertIn("Chat ID: -100999", sent_text)
         self.assertIn("Message Thread ID: 77", sent_text)
+
+    async def test_start_and_help_commands_work_for_admin_in_private(self):
+        bot = self._create_bot()
+        reply_text = AsyncMock()
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(type="private"),
+            effective_message=SimpleNamespace(reply_text=reply_text),
+        )
+
+        await bot.cmd_start(update, SimpleNamespace())
+        await bot.cmd_help(update, SimpleNamespace())
+        self.assertEqual(reply_text.await_count, 2)
+
+    async def test_status_and_today_commands_work_for_admin_in_private(self):
+        bot = self._create_bot()
+        reply_text = AsyncMock()
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(type="private"),
+            effective_message=SimpleNamespace(reply_text=reply_text),
+        )
+
+        with patch.object(bot, "_current_msk_datetime", return_value=datetime(2026, 4, 3, 8, 30, tzinfo=MSK)):
+            await bot.cmd_status(update, SimpleNamespace())
+            await bot.cmd_today(update, SimpleNamespace())
+        self.assertEqual(reply_text.await_count, 2)
+
+    async def test_setday_start_stop_restart_commands_persist_and_reply(self):
+        bot = self._create_bot()
+        reply_text = AsyncMock()
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(type="private"),
+            effective_message=SimpleNamespace(reply_text=reply_text),
+        )
+
+        await bot.cmd_setday(update, SimpleNamespace(args=["7"]))
+        await bot.cmd_start_challenge(update, SimpleNamespace())
+        await bot.cmd_stop_challenge(update, SimpleNamespace())
+        await bot.cmd_restart_challenge(update, SimpleNamespace())
+        self.assertGreaterEqual(reply_text.await_count, 4)
+
+    async def test_configure_start_and_manual_input_flow(self):
+        bot = self._create_bot()
+        reply_text = AsyncMock()
+        query = SimpleNamespace(
+            data="start:manual",
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        context = SimpleNamespace(user_data={})
+        callback_update = SimpleNamespace(
+            callback_query=query,
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(type="private"),
+            effective_message=None,
+        )
+
+        await bot.handle_start_date_callback(callback_update, context)
+        self.assertTrue(context.user_data.get("awaiting_start_date_input"))
+
+        input_update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(type="private"),
+            effective_message=SimpleNamespace(text="2026-04-12", reply_text=reply_text),
+        )
+        with patch.object(bot, "_current_msk_datetime", return_value=datetime(2026, 4, 3, 9, 0, tzinfo=MSK)):
+            await bot.handle_manual_start_date_input(input_update, context)
+        self.assertEqual(bot.state.challenge_start_date, date(2026, 4, 12))
+        self.assertNotIn("awaiting_start_date_input", context.user_data)
+
+    async def test_buttons_handler_processes_only_known_buttons(self):
+        bot = self._create_bot()
+        reply_text = AsyncMock()
+        update_unknown = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(type="private"),
+            effective_message=SimpleNamespace(text="Привет", reply_text=reply_text),
+        )
+        update_known = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(type="private"),
+            effective_message=SimpleNamespace(text="Статус", reply_text=reply_text),
+        )
+
+        await bot.handle_buttons(update_unknown, SimpleNamespace())
+        self.assertEqual(reply_text.await_count, 0)
+        await bot.handle_buttons(update_known, SimpleNamespace())
+        self.assertEqual(reply_text.await_count, 1)
+
+    async def test_admin_only_restrictions_for_private_commands_and_chatid(self):
+        bot = self._create_bot()
+        denied_reply = AsyncMock()
+        private_non_admin = SimpleNamespace(
+            effective_user=SimpleNamespace(id=999),
+            effective_chat=SimpleNamespace(type="private", id=100),
+            effective_message=SimpleNamespace(reply_text=denied_reply, text="/status", message_thread_id=None),
+        )
+        group_admin = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42),
+            effective_chat=SimpleNamespace(type="supergroup", id=-100),
+            effective_message=SimpleNamespace(reply_text=denied_reply, text="/status", message_thread_id=None),
+        )
+
+        await bot.cmd_status(private_non_admin, SimpleNamespace())
+        await bot.cmd_help(group_admin, SimpleNamespace())
+        self.assertGreaterEqual(denied_reply.await_count, 1)
+
+        chatid_non_admin = SimpleNamespace(
+            effective_user=SimpleNamespace(id=999),
+            effective_chat=SimpleNamespace(type="private", id=100),
+            effective_message=SimpleNamespace(reply_text=denied_reply, message_thread_id=None),
+        )
+        await bot.cmd_chatid(chatid_non_admin, SimpleNamespace())
+        self.assertGreaterEqual(denied_reply.await_count, 2)
+
+    async def test_daily_and_final_delivery_with_scheduler_paths(self):
+        bot = self._create_bot()
+        bot.state.challenge_start_date = date(2026, 4, 3)
+
+        with patch.object(bot, "_current_msk_datetime", return_value=datetime(2026, 4, 3, 8, 0, tzinfo=MSK)):
+            await bot.send_daily_message_if_needed()
+        self.assertEqual(bot.state.last_daily_sent_for, date(2026, 4, 3))
+
+        bot.state.challenge_start_date = date(2026, 3, 4)  # final date 2026-04-03
+        with patch.object(bot, "_current_msk_datetime", return_value=datetime(2026, 4, 3, 9, 0, tzinfo=MSK)):
+            await bot.send_final_message_if_needed()
+        self.assertEqual(bot.state.final_sent_for, date(2026, 4, 3))
 
 
 if __name__ == "__main__":
