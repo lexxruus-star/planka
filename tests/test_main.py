@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -10,6 +11,8 @@ from main import (
     BUTTON_TEXT_REGEX,
     DAY_MESSAGES,
     DAY_PLAN,
+    DAILY_WEEKDAY_TIME,
+    DAILY_WEEKEND_TIME,
     KNOWN_BUTTON_LABELS,
     AppConfig,
     BotState,
@@ -59,6 +62,10 @@ class MainTests(unittest.TestCase):
             late = datetime(2026, 4, 4, FINAL_TIME.hour, FINAL_TIME.minute, tzinfo=MSK)
             self.assertFalse(bot._is_after_or_equal(early, DAILY_TIME))
             self.assertTrue(bot._is_after_or_equal(late, FINAL_TIME))
+
+    def test_daily_time_by_weekday_in_msk(self):
+        self.assertEqual(PlankChallengeBot._daily_time_for_date(date(2026, 4, 9)), DAILY_WEEKDAY_TIME)  # Thursday
+        self.assertEqual(PlankChallengeBot._daily_time_for_date(date(2026, 4, 11)), DAILY_WEEKEND_TIME)  # Saturday
 
     def test_admin_ids_parse(self):
         self.assertEqual(_parse_admin_ids("1, 2,3"), {1, 2, 3})
@@ -202,6 +209,12 @@ class MainTests(unittest.TestCase):
             "А вы знали, что планка — это упражнение, где мышцы работают почти без движения?\n"
             "Снаружи всё выглядит спокойно, а внутри корпус уже активно включается в работу.",
         )
+        self.assertEqual(
+            DAY_MESSAGES[13],
+            "Сегодня отдых — можно спокойно выдохнуть.\n"
+            "А вы знали, что мировой рекорд по удержанию планки на локтях среди мужчин составляет 9 часов 38 минут 47 секунд?\n"
+            "Этот результат установил Йозеф Шалек из Чехии.",
+        )
         self.assertIn("Сегодня день со спецзаданием.", DAY_MESSAGES[10])
         self.assertIn("Сегодня к основной норме добавляется спецзадание.", DAY_MESSAGES[30])
 
@@ -231,6 +244,20 @@ class MainAsyncTests(unittest.IsolatedAsyncioTestCase):
             await bot._apply_start_date_change(date(2026, 4, 3))
         bot.application.bot.send_message.assert_awaited_once()
         self.assertEqual(bot.state.last_daily_sent_for, date(2026, 4, 3))
+
+    async def test_start_weekend_before_9_does_not_send_catchup(self):
+        bot = self._create_bot()
+        with patch.object(bot, "_current_msk_datetime", return_value=datetime(2026, 4, 11, 8, 30, tzinfo=MSK)):
+            await bot._apply_start_date_change(date(2026, 4, 11))
+        bot.application.bot.send_message.assert_not_called()
+        self.assertIsNone(bot.state.last_daily_sent_for)
+
+    async def test_start_weekend_after_9_sends_catchup(self):
+        bot = self._create_bot()
+        with patch.object(bot, "_current_msk_datetime", return_value=datetime(2026, 4, 11, 9, 10, tzinfo=MSK)):
+            await bot._apply_start_date_change(date(2026, 4, 11))
+        bot.application.bot.send_message.assert_awaited_once()
+        self.assertEqual(bot.state.last_daily_sent_for, date(2026, 4, 11))
 
     async def test_manual_start_date_input_updates_state(self):
         bot = self._create_bot()
@@ -461,6 +488,32 @@ class MainAsyncTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(bot, "_current_msk_datetime", return_value=datetime(2026, 4, 3, 9, 0, tzinfo=MSK)):
             await bot.send_final_message_if_needed()
         self.assertEqual(bot.state.final_sent_for, date(2026, 4, 3))
+
+    async def test_no_duplicate_daily_messages_between_scheduler_and_catchup(self):
+        bot = self._create_bot()
+        bot.state.challenge_start_date = date(2026, 4, 11)  # Saturday, day 1
+        with patch.object(bot, "_current_msk_datetime", return_value=datetime(2026, 4, 11, 9, 0, tzinfo=MSK)):
+            await bot.send_daily_message_if_needed()
+        with patch.object(bot, "_current_msk_datetime", return_value=datetime(2026, 4, 11, 9, 5, tzinfo=MSK)):
+            await bot.send_daily_message_if_needed(allow_late=True)
+        bot.application.bot.send_message.assert_awaited_once()
+        self.assertEqual(bot.state.last_daily_sent_for, date(2026, 4, 11))
+
+    async def test_existing_state_not_reset_by_daily_schedule_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            original = {
+                "challenge_start_date": "2026-04-06",
+                "challenge_active": True,
+                "last_daily_sent_for": "2026-04-09",
+                "final_sent_for": None,
+            }
+            state_path.write_text(json.dumps(original), encoding="utf-8")
+            config = AppConfig(bot_token="t", chat_id=777, state_path=state_path, admin_ids={42})
+            bot = PlankChallengeBot(config)
+            self.assertEqual(bot.state.challenge_start_date, date(2026, 4, 6))
+            self.assertEqual(bot.state.last_daily_sent_for, date(2026, 4, 9))
+            self.assertIsNone(bot.state.final_sent_for)
 
 
 if __name__ == "__main__":
