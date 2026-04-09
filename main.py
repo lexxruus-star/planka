@@ -31,7 +31,9 @@ for noisy_logger_name in ("httpx", "httpcore", "telegram", "telegram.ext"):
     logging.getLogger(noisy_logger_name).setLevel(logging.WARNING)
 
 MSK = timezone(timedelta(hours=3), name="MSK")
-DAILY_TIME = time(8, 0)
+DAILY_WEEKDAY_TIME = time(8, 0)
+DAILY_WEEKEND_TIME = time(9, 0)
+DAILY_TIME = DAILY_WEEKDAY_TIME
 FINAL_TIME = time(9, 0)
 
 START_COMMAND = "start"
@@ -78,7 +80,7 @@ DAY_MESSAGES: Dict[int, str] = {
     10: "Доброе утро. Сегодня продолжаем.\nДень 10.\nСегодня стоим 1 мин.\nСегодня день со спецзаданием.",
     11: "Сегодня делаем свою норму.\nДень 11.\nСегодня стоим 1 мин.",
     12: "Новый день — новая норма.\nДень 12.\nСегодня стоим 1 мин 30 сек.",
-    13: "Сегодня отдых — можно спокойно выдохнуть.\nА вы знали, что в планке работает не только пресс, а сразу много мышц корпуса?\nПоэтому она считается упражнением не на одну зону, а сразу на целую команду мышц.",
+    13: "Сегодня отдых — можно спокойно выдохнуть.\nА вы знали, что мировой рекорд по удержанию планки на локтях среди мужчин составляет 9 часов 38 минут 47 секунд?\nЭтот результат установил Йозеф Шалек из Чехии.",
     14: "Сегодня идём дальше по плану.\nДень 14.\nСегодня стоим 1 мин 40 сек.",
     15: "Спокойно, уверенно, поехали.\nДень 15.\nСегодня стоим 1 мин 50 сек.\nСегодня к основной норме добавляется спецзадание.",
     16: "Доброе утро. Сегодня продолжаем.\nДень 16.\nСегодня стоим 2 мин.",
@@ -376,6 +378,12 @@ class PlankChallengeBot:
         return (now.hour, now.minute) >= (target.hour, target.minute)
 
     @staticmethod
+    def _daily_time_for_date(target_date: date) -> time:
+        if target_date.weekday() >= 5:
+            return DAILY_WEEKEND_TIME
+        return DAILY_WEEKDAY_TIME
+
+    @staticmethod
     def _is_in_challenge_range(day_number: int) -> bool:
         return 1 <= day_number <= 30
 
@@ -441,8 +449,9 @@ class PlankChallengeBot:
                 logger.info("No daily message scheduled for %s (day_number=%s)", today, day_number)
                 return
 
-            if allow_late and not self._is_after_or_equal(now, DAILY_TIME):
-                logger.info("Daily catch-up not needed before %s", DAILY_TIME)
+            target_daily_time = self._daily_time_for_date(today)
+            if allow_late and not self._is_after_or_equal(now, target_daily_time):
+                logger.info("Daily catch-up not needed before %s for %s", target_daily_time, today)
                 return
 
             message = self._build_daily_message(day_number)
@@ -711,8 +720,26 @@ class PlankChallengeBot:
     def start_scheduler(self) -> None:
         self.scheduler.add_job(
             self.send_daily_message_if_needed,
-            CronTrigger(hour=DAILY_TIME.hour, minute=DAILY_TIME.minute, timezone=MSK),
-            id="daily_message",
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=DAILY_WEEKDAY_TIME.hour,
+                minute=DAILY_WEEKDAY_TIME.minute,
+                timezone=MSK,
+            ),
+            id="daily_message_weekdays",
+            replace_existing=True,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+        self.scheduler.add_job(
+            self.send_daily_message_if_needed,
+            CronTrigger(
+                day_of_week="sat,sun",
+                hour=DAILY_WEEKEND_TIME.hour,
+                minute=DAILY_WEEKEND_TIME.minute,
+                timezone=MSK,
+            ),
+            id="daily_message_weekends",
             replace_existing=True,
             coalesce=True,
             misfire_grace_time=3600,
